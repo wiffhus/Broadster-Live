@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Broadster (Live API ver)</title>
+    <style>
+        /* (前のコードと同じCSSをここに貼り付け) */
+        body { background-color: #e0e0e0; font-family: sans-serif; height: 100vh; margin: 0; display: flex; justify-content: center; align-items: center;}
+        .window { width: 800px; background-color: #f0f0f0; border: 2px solid #333; border-radius: 8px; box-shadow: 5px 5px 10px rgba(0, 0, 0, 0.3); overflow: hidden; }
+        .title-bar { background-color: #ccc; border-bottom: 2px solid #333; padding: 5px 10px; text-align: center; font-weight: bold; user-select: none; }
+        .content { padding: 20px; display: flex; gap: 20px; }
+        .box { width: 50%; }
+        h2 { margin-top: 0; font-size: 18px; border-bottom: 1px solid #aaa; padding-bottom: 5px; }
+        textarea { width: 100%; height: 300px; box-sizing: border-box; padding: 8px; border: 1px solid #999; border-radius: 4px; font-size: 14px; background-color: #fff; margin: 0; }
+        #suggestions { background-color: #f9f9f9; border-color: #aaa; white-space: pre-wrap; overflow-y: auto; }
+        .button-group { display: flex; gap: 8px; margin-top: 10px; }
+        button.record-button { padding: 10px 15px; font-size: 16px; cursor: pointer; border: 1px solid #888; border-radius: 4px; font-weight: bold; width: 100%; background-color: #a0e0a0; }
+        button.record-button.recording { background-color: #e0a0a0; }
+        button.ai-button { padding: 8px 12px; font-size: 14px; cursor: pointer; background-color: #ddd; border: 1px solid #888; border-radius: 4px; width: 100%; margin-top: 10px; }
+        button:hover { background-color: #ccc; }
+        button:disabled { background-color: #ccc; color: #888; cursor: default; }
+    </style>
+</head>
+<body>
+
+    <div class="window">
+        <div class="title-bar">
+            Broadster (Live API ver)
+        </div>
+        <div class="content">
+            <div class="box">
+                <h2>Live Transcript (by AI)</h2>
+                <textarea id="transcript" placeholder="録音ボタンを押して話してください..."></textarea>
+                <div class="button-group">
+                    <button class="record-button" id="recordButton" onclick="toggleRecording()">
+                        Start Recording
+                    </button>
+                </div>
+            </div>
+            <div class="box">
+                <h2>AI Topic Suggestions</h2>
+                <textarea id="suggestions" placeholder="AIの提案がここに表示されます..." readonly></textarea>
+                <button class="ai-button" id="aiButton" onclick="getTopicIdeas()">
+                    Get Topic Ideas (from Transcript)
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const transcriptArea = document.getElementById('transcript');
+        const suggestionsArea = document.getElementById('suggestions');
+        const recordButton = document.getElementById('recordButton');
+        const aiButton = document.getElementById('aiButton');
+
+        let socket;
+        let mediaRecorder;
+        let isRecording = false;
+
+        // --- デプロイ先のURLを自動で判別 ---
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const httpProtocol = window.location.protocol;
+        const host = window.location.host;
+        
+        const wsUrl = `${wsProtocol}//${host}`;
+        const httpUrlBase = `${httpProtocol}//${host}`;
+
+        // --- WebSocket (サーバーとの接続) ---
+        function connectWebSocket() {
+            socket = new WebSocket(wsUrl); // デプロイ先のURLに接続
+            socket.onopen = () => {
+                console.log('サーバーに接続しました (WebSocket)');
+                startMicrophone();
+            };
+            socket.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                if (message.type === 'transcript') {
+                    // ★Live APIは途中の結果も送ってくるので、
+                    //   うまい具合にテキストエリアに追加していく処理が必要
+                    transcriptArea.value = message.data; // (今は単純に上書き)
+                }
+            };
+            socket.onclose = () => {
+                console.log('サーバーから切断されました。');
+                stopMicrophone();
+            };
+            socket.onerror = (error) => {
+                console.error('WebSocketエラー:', error);
+                alert('サーバーに接続できませんでした。');
+                toggleRecording(); 
+            };
+        }
+
+        // --- マイク録音 (MediaRecorder) ---
+        async function startMicrophone() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' }); // 形式を指定
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0 && socket?.readyState === WebSocket.OPEN) {
+                        // (B) 音声データをWebSocketでサーバーに送る
+                        // ★注意: server.js側がこのBlobデータを正しく処理する必要があります
+                        socket.send(event.data); 
+                    }
+                };
+                mediaRecorder.start(1000); // 1秒ごとにデータを区切る
+            } catch (err) {
+                console.error('マイクへのアクセスエラー:', err);
+                alert('マイクへのアクセスが許可されませんでした。');
+                toggleRecording();
+            }
+        }
+        function stopMicrophone() {
+            if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
+            if (socket?.readyState === WebSocket.OPEN) socket.close();
+        }
+
+        // --- UI操作 ---
+        function toggleRecording() {
+            isRecording = !isRecording;
+            if (isRecording) {
+                recordButton.textContent = 'Stop Recording';
+                recordButton.classList.add('recording');
+                transcriptArea.value = '';
+                connectWebSocket(); 
+            } else {
+                recordButton.textContent = 'Start Recording';
+                recordButton.classList.remove('recording');
+                stopMicrophone();
+            }
+        }
+
+        // --- 話題提案 (HTTP) ---
+        async function getTopicIdeas() {
+            const transcript = transcriptArea.value;
+            if (!transcript) return;
+
+            aiButton.disabled = true; aiButton.textContent = "AI is thinking...";
+            suggestionsArea.value = "AIが次の話題を考えています...";
+
+            try {
+                // server.js の /api/suggest を呼び出す
+                const response = await fetch(`${httpUrlBase}/api/suggest`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: transcript }),
+                });
+
+                if (!response.ok) throw new Error(`Server error: ${response.status}`);
+                const data = await response.json();
+                suggestionsArea.value = data.suggestion;
+            } catch (error) {
+                console.error('Error:', error);
+                suggestionsArea.value = `Error: ${error.message}`;
+            } finally {
+                aiButton.disabled = false; aiButton.textContent = "Get Topic Ideas";
+            }
+        }
+    </script>
+
+</body>
+</html>
