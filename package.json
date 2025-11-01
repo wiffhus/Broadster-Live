@@ -1,0 +1,16 @@
+{
+  "name": "broadster-live-render",
+  "version": "1.0.0",
+  "description": "Broadster Live on Render",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "install": "npm install"
+  },
+  "dependencies": {
+    "@google-cloud/vertexai": "^1.0.0",
+    "express": "^4.19.2",
+    "ws": "^8.17.0"
+  }
+}
